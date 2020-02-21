@@ -172,6 +172,7 @@ have_func("EVP_PKEY_check")
 have_func("ERR_get_error_all")
 have_func("TS_VERIFY_CTX_set_certs(NULL, NULL)", "openssl/ts.h")
 have_func("SSL_CTX_load_verify_file")
+have_func("BN_check_prime")
 
 Logging::message "=== Checking done. ===\n"
 
