@@ -512,7 +512,7 @@ ossl_ec_key_to_data(VALUE self)
 static void
 ossl_ec_group_free(void *ptr)
 {
-    EC_GROUP_clear_free(ptr);
+    EC_GROUP_free(ptr);
 }
 
 static const rb_data_type_t ossl_ec_group_type = {
