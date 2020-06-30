@@ -1286,6 +1286,8 @@ static VALUE ossl_ec_point_is_on_curve(VALUE self)
 /*
  * call-seq:
  *   point.make_affine! => self
+ *
+ * This method is deprecated and should not be used.
  */
 static VALUE ossl_ec_point_make_affine(VALUE self)
 {
@@ -1295,8 +1297,12 @@ static VALUE ossl_ec_point_make_affine(VALUE self)
     GetECPoint(self, point);
     GetECPointGroup(self, group);
 
+    rb_warn("OpenSSL::PKey::EC::Point#make_affine! is deprecated; " \
+            "the conversion is automatically performed when necessary");
+#if !(OPENSSL_VERSION_MAJOR+0 >= 3)
     if (EC_POINT_make_affine(group, point, ossl_bn_ctx) != 1)
         ossl_raise(cEC_POINT, "EC_POINT_make_affine");
+#endif
 
     return self;
 }
