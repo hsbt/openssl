@@ -427,9 +427,14 @@ ossl_pkey_s_generate_key(int argc, VALUE *argv, VALUE self)
     return pkey_generate(argc, argv, self, 0);
 }
 
+/* FIXME: Should track key state instead */
 void
 ossl_pkey_check_public_key(const EVP_PKEY *pkey)
 {
+#if OPENSSL_VERSION_MAJOR+0 >= 3
+    if (EVP_PKEY_missing_parameters(pkey))
+	ossl_raise(ePKeyError, "parameters missing");
+#else
     void *ptr;
     const BIGNUM *n, *e, *pubkey;
 
@@ -465,6 +470,7 @@ ossl_pkey_check_public_key(const EVP_PKEY *pkey)
 	return;
     }
     ossl_raise(ePKeyError, "public key missing");
+#endif
 }
 
 EVP_PKEY *
