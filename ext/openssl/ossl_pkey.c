@@ -82,12 +82,41 @@ ossl_pkey_new(EVP_PKEY *pkey)
     return obj;
 }
 
+#if OPENSSL_VERSION_MAJOR+0 >= 3
+# include <openssl/decoder.h>
+static EVP_PKEY *
+ossl_pkey_read_decoder(BIO *bio, const char *input_type, void *ppass)
+{
+    OSSL_DECODER_CTX *dctx;
+    EVP_PKEY *pkey = NULL;
+
+    dctx = OSSL_DECODER_CTX_new_for_pkey(&pkey, input_type, NULL, NULL, 0, NULL, NULL);
+    if (!dctx)
+        goto out;
+    if (OSSL_DECODER_CTX_set_pem_password_cb(dctx, ossl_pem_passwd_cb, ppass) != 1)
+        goto out;
+    if (OSSL_DECODER_from_bio(dctx, bio) != 1)
+        goto out;
+
+  out:
+    OSSL_DECODER_CTX_free(dctx);
+    return pkey;
+}
+#endif
+
 EVP_PKEY *
 ossl_pkey_read_generic(BIO *bio, VALUE pass)
 {
     void *ppass = (void *)pass;
     EVP_PKEY *pkey;
 
+#if OPENSSL_VERSION_MAJOR+0 >= 3
+    if ((pkey = ossl_pkey_read_decoder(bio, "DER", ppass)))
+        goto out;
+    OSSL_BIO_reset(bio);
+    if ((pkey = ossl_pkey_read_decoder(bio, "PEM", ppass)))
+        goto out;
+#else
     if ((pkey = d2i_PrivateKey_bio(bio, NULL)))
 	goto out;
     OSSL_BIO_reset(bio);
@@ -106,8 +135,14 @@ ossl_pkey_read_generic(BIO *bio, VALUE pass)
     OSSL_BIO_reset(bio);
     if ((pkey = PEM_read_bio_Parameters(bio, NULL)))
 	goto out;
+#endif
 
   out:
+#if OPENSSL_VERSION_MAJOR+0 >= 3
+    /* FIXME: OpenSSL bug? */
+    if (pkey)
+        ossl_clear_error();
+#endif
     return pkey;
 }
 
