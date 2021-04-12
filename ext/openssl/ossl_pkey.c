@@ -314,6 +314,11 @@ pkey_generate(int argc, VALUE *argv, VALUE self, int genparam)
             ossl_raise(ePKeyError, "EVP_PKEY_CTX_new");
     }
     else {
+#if OPENSSL_VERSION_MAJOR+0 >= 3
+        ctx = EVP_PKEY_CTX_new_from_name(NULL, StringValueCStr(alg), NULL);
+        if (!ctx)
+            ossl_raise(ePKeyError, "EVP_PKEY_CTX_new_from_name");
+#else
         const EVP_PKEY_ASN1_METHOD *ameth;
         ENGINE *tmpeng;
         int pkey_id;
@@ -324,14 +329,15 @@ pkey_generate(int argc, VALUE *argv, VALUE self, int genparam)
         if (!ameth)
             ossl_raise(ePKeyError, "algorithm %"PRIsVALUE" not found", alg);
         EVP_PKEY_asn1_get0_info(&pkey_id, NULL, NULL, NULL, NULL, ameth);
-#if !defined(OPENSSL_NO_ENGINE)
+# ifndef OPENSSL_NO_ENGINE
         if (tmpeng)
             ENGINE_finish(tmpeng);
-#endif
+# endif
 
         ctx = EVP_PKEY_CTX_new_id(pkey_id, NULL/* engine */);
         if (!ctx)
             ossl_raise(ePKeyError, "EVP_PKEY_CTX_new_id");
+#endif
     }
 
     if (genparam && EVP_PKEY_paramgen_init(ctx) <= 0) {
