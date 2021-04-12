@@ -42,12 +42,8 @@ static VALUE
 pkey_new0(EVP_PKEY *pkey)
 {
     VALUE klass, obj;
-    int type;
 
-    if (!pkey || (type = EVP_PKEY_base_id(pkey)) == EVP_PKEY_NONE)
-	ossl_raise(rb_eRuntimeError, "pkey is empty");
-
-    switch (type) {
+    switch (EVP_PKEY_base_id(pkey)) {
 #if !defined(OPENSSL_NO_RSA)
       case EVP_PKEY_RSA: klass = cRSA; break;
 #endif
