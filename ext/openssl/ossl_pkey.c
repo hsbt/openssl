@@ -58,8 +58,8 @@ pkey_new0(EVP_PKEY *pkey)
 #endif
       default:           klass = cPKey; break;
     }
-    obj = NewPKey(klass);
-    SetPKey(obj, pkey);
+    obj = rb_obj_alloc(klass);
+    RTYPEDDATA_DATA(obj) = pkey;
     return obj;
 }
 
@@ -522,16 +522,7 @@ DupPKeyPtr(VALUE obj)
 static VALUE
 ossl_pkey_alloc(VALUE klass)
 {
-    EVP_PKEY *pkey;
-    VALUE obj;
-
-    obj = NewPKey(klass);
-    if (!(pkey = EVP_PKEY_new())) {
-	ossl_raise(ePKeyError, NULL);
-    }
-    SetPKey(obj, pkey);
-
-    return obj;
+    return TypedData_Wrap_Struct(klass, &ossl_evp_pkey_type, NULL);
 }
 
 /*

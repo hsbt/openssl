@@ -83,12 +83,16 @@ VALUE eDSAError;
 static VALUE
 ossl_dsa_initialize(int argc, VALUE *argv, VALUE self)
 {
-    EVP_PKEY *pkey, *tmp;
-    DSA *dsa = NULL;
+    EVP_PKEY *pkey;
+    DSA *dsa;
     BIO *in;
     VALUE arg, pass;
+    int type;
 
-    GetPKey(self, pkey);
+    GetPKey0(self, pkey);
+    if (pkey)
+        rb_raise(rb_eTypeError, "pkey already initialized");
+
     /* The DSA.new(size, generator) form is handled by lib/openssl/pkey.rb */
     rb_scan_args(argc, argv, "02", &arg, &pass);
     if (argc == 0) {
@@ -97,36 +101,41 @@ ossl_dsa_initialize(int argc, VALUE *argv, VALUE self)
             ossl_raise(eDSAError, "DSA_new");
     }
     else {
-	pass = ossl_pem_passwd_value(pass);
-	arg = ossl_to_der_if_possible(arg);
-	in = ossl_obj2bio(&arg);
+        pass = ossl_pem_passwd_value(pass);
+        arg = ossl_to_der_if_possible(arg);
+        in = ossl_obj2bio(&arg);
 
-        tmp = ossl_pkey_read_generic(in, pass);
-        if (tmp) {
-            if (EVP_PKEY_base_id(tmp) != EVP_PKEY_DSA)
-                rb_raise(eDSAError, "incorrect pkey type: %s",
-                         OBJ_nid2sn(EVP_PKEY_base_id(tmp)));
-            dsa = EVP_PKEY_get1_DSA(tmp);
-            EVP_PKEY_free(tmp);
+        dsa = (DSA *)PEM_ASN1_read_bio((d2i_of_void *)d2i_DSAPublicKey,
+                                       PEM_STRING_DSA_PUBLIC,
+                                       in, NULL, NULL, NULL);
+        OSSL_BIO_reset(in);
+        if (dsa)
+            goto legacy;
+
+        pkey = ossl_pkey_read_generic(in, pass);
+        BIO_free(in);
+        if (!pkey)
+            ossl_raise(eDSAError, "Neither PUB key nor PRIV key");
+
+        type = EVP_PKEY_base_id(pkey);
+        if (type != EVP_PKEY_DSA) {
+            EVP_PKEY_free(pkey);
+            rb_raise(eDSAError, "incorrect pkey type: %s", OBJ_nid2sn(type));
         }
-	if (!dsa) {
-	    OSSL_BIO_reset(in);
-#define PEM_read_bio_DSAPublicKey(bp,x,cb,u) (DSA *)PEM_ASN1_read_bio( \
-	(d2i_of_void *)d2i_DSAPublicKey, PEM_STRING_DSA_PUBLIC, (bp), (void **)(x), (cb), (u))
-	    dsa = PEM_read_bio_DSAPublicKey(in, NULL, NULL, NULL);
-#undef PEM_read_bio_DSAPublicKey
-	}
-	BIO_free(in);
-	if (!dsa) {
-	    ossl_clear_error();
-	    ossl_raise(eDSAError, "Neither PUB key nor PRIV key");
-	}
-    }
-    if (!EVP_PKEY_assign_DSA(pkey, dsa)) {
-	DSA_free(dsa);
-	ossl_raise(eDSAError, NULL);
+        RTYPEDDATA_DATA(self) = pkey;
+        return self;
     }
 
+  legacy:
+    if (dsa) {
+        pkey = EVP_PKEY_new();
+        if (!pkey || EVP_PKEY_assign_DSA(pkey, dsa) != 1) {
+            EVP_PKEY_free(pkey);
+            DSA_free(dsa);
+            ossl_raise(eDSAError, "EVP_PKEY_assign_DSA");
+        }
+    }
+    RTYPEDDATA_DATA(self) = pkey;
     return self;
 }
 
@@ -136,16 +145,24 @@ ossl_dsa_initialize_copy(VALUE self, VALUE other)
     EVP_PKEY *pkey;
     DSA *dsa, *dsa_new;
 
-    GetPKey(self, pkey);
-    if (EVP_PKEY_base_id(pkey) != EVP_PKEY_NONE)
-	ossl_raise(eDSAError, "DSA already initialized");
+    GetPKey0(self, pkey);
+    if (pkey)
+        rb_raise(rb_eTypeError, "pkey already initialized");
     GetDSA(other, dsa);
 
-    dsa_new = ASN1_dup((i2d_of_void *)i2d_DSAPrivateKey, (d2i_of_void *)d2i_DSAPrivateKey, (char *)dsa);
+    dsa_new = (DSA *)ASN1_dup((i2d_of_void *)i2d_DSAPrivateKey,
+                              (d2i_of_void *)d2i_DSAPrivateKey,
+                              (char *)dsa);
     if (!dsa_new)
 	ossl_raise(eDSAError, "ASN1_dup");
 
-    EVP_PKEY_assign_DSA(pkey, dsa_new);
+    pkey = EVP_PKEY_new();
+    if (!pkey || EVP_PKEY_assign_DSA(pkey, dsa_new) != 1) {
+        EVP_PKEY_free(pkey);
+        DSA_free(dsa_new);
+        ossl_raise(eDSAError, "EVP_PKEY_assign_DSA");
+    }
+    RTYPEDDATA_DATA(self) = pkey;
 
     return self;
 }

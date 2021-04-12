@@ -76,7 +76,10 @@ ossl_dh_initialize(int argc, VALUE *argv, VALUE self)
     BIO *in;
     VALUE arg;
 
-    GetPKey(self, pkey);
+    GetPKey0(self, pkey);
+    if (pkey)
+        rb_raise(rb_eTypeError, "pkey already initialized");
+
     /* The DH.new(size, generator) form is handled by lib/openssl/pkey.rb */
     if (rb_scan_args(argc, argv, "01", &arg) == 0) {
         dh = DH_new();
@@ -84,22 +87,44 @@ ossl_dh_initialize(int argc, VALUE *argv, VALUE self)
             ossl_raise(eDHError, "DH_new");
     }
     else {
-	arg = ossl_to_der_if_possible(arg);
-	in = ossl_obj2bio(&arg);
-	dh = PEM_read_bio_DHparams(in, NULL, NULL, NULL);
-	if (!dh){
-	    OSSL_BIO_reset(in);
-	    dh = d2i_DHparams_bio(in, NULL);
-	}
-	BIO_free(in);
-	if (!dh) {
-	    ossl_raise(eDHError, NULL);
-	}
+        int type;
+
+        arg = ossl_to_der_if_possible(arg);
+        in = ossl_obj2bio(&arg);
+
+        /* First try DER-encoded parameters */
+        dh = d2i_DHparams_bio(in, NULL);
+        OSSL_BIO_reset(in);
+        if (dh) {
+            BIO_free(in);
+            goto legacy;
+        }
+
+        /* Use the generic routine - parses PEM-encoded parameters */
+        pkey = ossl_pkey_read_generic(in, Qnil);
+        BIO_free(in);
+        if (!pkey)
+            ossl_raise(eDHError, "could not parse pkey");
+
+        type = EVP_PKEY_base_id(pkey);
+        if (type != EVP_PKEY_DH) {
+            EVP_PKEY_free(pkey);
+            rb_raise(eDHError, "incorrect pkey type: %s", OBJ_nid2sn(type));
+        }
+        RTYPEDDATA_DATA(self) = pkey;
+        return self;
     }
-    if (!EVP_PKEY_assign_DH(pkey, dh)) {
-	DH_free(dh);
-	ossl_raise(eDHError, NULL);
+
+  legacy:
+    if (dh) {
+        pkey = EVP_PKEY_new();
+        if (!pkey || EVP_PKEY_assign_DH(pkey, dh) != 1) {
+            EVP_PKEY_free(pkey);
+            DH_free(dh);
+            ossl_raise(eDHError, "EVP_PKEY_assign_DH");
+        }
     }
+    RTYPEDDATA_DATA(self) = pkey;
     return self;
 }
 
@@ -110,15 +135,14 @@ ossl_dh_initialize_copy(VALUE self, VALUE other)
     DH *dh, *dh_other;
     const BIGNUM *pub, *priv;
 
-    GetPKey(self, pkey);
-    if (EVP_PKEY_base_id(pkey) != EVP_PKEY_NONE)
-	ossl_raise(eDHError, "DH already initialized");
+    GetPKey0(self, pkey);
+    if (pkey)
+        rb_raise(rb_eTypeError, "pkey already initialized");
     GetDH(other, dh_other);
 
     dh = DHparams_dup(dh_other);
     if (!dh)
 	ossl_raise(eDHError, "DHparams_dup");
-    EVP_PKEY_assign_DH(pkey, dh);
 
     DH_get0_key(dh_other, &pub, &priv);
     if (pub) {
@@ -133,6 +157,13 @@ ossl_dh_initialize_copy(VALUE self, VALUE other)
 	DH_set0_key(dh, pub2, priv2);
     }
 
+    pkey = EVP_PKEY_new();
+    if (!pkey || EVP_PKEY_assign_DH(pkey, dh) != 1) {
+        EVP_PKEY_free(pkey);
+        DH_free(dh);
+        ossl_raise(eDHError, "EVP_PKEY_assign_DH");
+    }
+    RTYPEDDATA_DATA(self) = pkey;
     return self;
 }
 
