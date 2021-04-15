@@ -59,6 +59,14 @@ class OpenSSL::TestEC < OpenSSL::PKeyTestCase
     assert_equal key.to_der, deserialized.to_der
   end
 
+  def test_to_data
+    p256 = Fixtures.pkey("p256")
+
+    data = p256.to_data
+    assert_equal "prime256v1", data[:group]
+    assert_equal p256.private_key, data[:priv]
+  end
+
   def test_check_key
     key = OpenSSL::PKey::EC.new("prime256v1").generate_key!
     assert_equal(true, key.check_key)

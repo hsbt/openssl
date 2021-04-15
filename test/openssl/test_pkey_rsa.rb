@@ -489,11 +489,15 @@ class OpenSSL::TestPKeyRSA < OpenSSL::PKeyTestCase
   end
 
   def test_dup
-    key = Fixtures.pkey("rsa1024")
-    key2 = key.dup
-    assert_equal key.params, key2.params
-    key2.set_key(key2.n, 3, key2.d)
-    assert_not_equal key.params, key2.params
+    key1 = Fixtures.pkey("rsa-1")
+    key1dup = key1.dup
+    key2 = Fixtures.pkey("rsa-2")
+    key2dup = key2.dup
+
+    assert_kind_of OpenSSL::PKey::RSA, key1dup
+    assert_equal key1.to_data, key1dup.to_data
+    assert_not_equal key1.to_data, key2dup.to_data
+    assert_not_equal key1dup.to_data, key2dup.to_data
   end
 
   def test_marshal
@@ -501,6 +505,54 @@ class OpenSSL::TestPKeyRSA < OpenSSL::PKeyTestCase
     deserialized = Marshal.load(Marshal.dump(key))
 
     assert_equal key.to_der, deserialized.to_der
+  end
+
+  def test_to_data
+    rsa = Fixtures.pkey("rsa2048")
+
+    # #params
+    params_keys = %w{n e d p q dmp1 dmq1 iqmp}
+    params = rsa.params
+    assert_equal [], params_keys - params.keys
+
+    # #to_data; may contain additional keys
+    data_keys = %w{n e d rsa-factor1 rsa-factor2 rsa-exponent1 rsa-exponent2 rsa-coefficient1}
+    data = rsa.to_data
+    assert_equal [], data_keys.map(&:intern) - data.keys
+
+    # Check value
+    assert_equal rsa.n, params["n"]
+    assert_equal rsa.n, data[:n]
+    assert_equal 2048, rsa.n.num_bits
+
+    params_keys.each_with_index do |pk, i|
+      dk = data_keys[i]
+      getter_value = rsa.public_send(pk)
+
+      assert_kind_of OpenSSL::BN, getter_value
+      assert_equal getter_value, params[pk]
+      assert_equal getter_value, data[dk.intern]
+    end
+  end
+
+  def test_to_data_public
+    rsa = OpenSSL::PKey.read(Fixtures.pkey("rsa2048").public_to_der)
+
+    # params: missing components will be BN 0
+    params = rsa.params
+    assert_equal %w{n e d p q dmp1 dmq1 iqmp}, params.keys
+    assert_equal 65537.to_bn, params["e"]
+    assert_equal 0.to_bn, params["d"]
+
+    # to_data
+    data = rsa.to_data
+    assert_equal [], %i{n e} - data.keys
+    assert_not_include data.keys, :d
+    assert_equal 65537.to_bn, data[:e]
+
+    # #d returns nil
+    assert_equal 65537.to_bn, rsa.e
+    assert_equal nil, rsa.d
   end
 
   private
