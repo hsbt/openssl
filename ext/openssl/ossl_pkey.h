@@ -130,6 +130,8 @@ static VALUE ossl_##_keytype##_set_##_group(VALUE self, VALUE v1, VALUE v2, VALU
 	BIGNUM *bn2 = NULL, *orig_bn2 = NIL_P(v2) ? NULL : GetBNPtr(v2);\
 	BIGNUM *bn3 = NULL, *orig_bn3 = NIL_P(v3) ? NULL : GetBNPtr(v3);\
 									\
+        rb_warning(#_keytype"#set_"#_group"= is incompatible with "	\
+                   "OpenSSL 3.0; check OpenSSL::PKey.from_data");	\
 	Get##_type(self, obj);						\
         if ((orig_bn1 && !(bn1 = BN_dup(orig_bn1))) ||			\
             (orig_bn2 && !(bn2 = BN_dup(orig_bn2))) ||			\
@@ -160,6 +162,8 @@ static VALUE ossl_##_keytype##_set_##_group(VALUE self, VALUE v1, VALUE v2) \
 	BIGNUM *bn1 = NULL, *orig_bn1 = NIL_P(v1) ? NULL : GetBNPtr(v1);\
 	BIGNUM *bn2 = NULL, *orig_bn2 = NIL_P(v2) ? NULL : GetBNPtr(v2);\
 									\
+        rb_warning(#_keytype"#set_"#_group"= is incompatible with "	\
+                   "OpenSSL 3.0; check OpenSSL::PKey.from_data");	\
 	Get##_type(self, obj);						\
         if ((orig_bn1 && !(bn1 = BN_dup(orig_bn1))) ||			\
             (orig_bn2 && !(bn2 = BN_dup(orig_bn2)))) {			\
