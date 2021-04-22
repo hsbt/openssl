@@ -700,6 +700,52 @@ ossl_pkey_to_data(VALUE self)
 #endif
 }
 
+/*
+ * :nodoc:
+ *
+ * call-seq:
+ *    pkey.get_bn_param(key) -> bn
+ *
+ * Retrieves a BIGNUM value associated with a name of +key+.
+ *
+ * See also #to_data, which returns all available parameters.
+ *
+ * See also the man page EVP_PKEY_get_bn_param(3).
+ */
+static VALUE
+ossl_pkey_get_bn_param(VALUE self, VALUE key)
+{
+#ifdef HAVE_EVP_PKEY_TODATA
+    EVP_PKEY *pkey;
+    BIGNUM *bn;
+    VALUE ret;
+
+    GetPKey(self, pkey);
+    ret = ossl_bn_new(NULL);
+    bn = GetBNPtr(ret);
+    if (SYMBOL_P(key))
+        key = rb_sym2str(key);
+
+    // It might be actually an error: for example, memory allocation failure
+    // This must use OSSL_PARAM directly instead
+    if (EVP_PKEY_get_bn_param(pkey, StringValueCStr(key), &bn) != 1)
+        return Qnil;
+
+    return ret;
+#else
+    VALUE ret, hash;
+
+    /* Let's assume the subclass implements #to_data */
+    hash = rb_funcall(self, rb_intern("to_data"), 0);
+    Check_Type(hash, T_HASH);
+    ret = rb_hash_aref(hash, key);
+    if (!NIL_P(ret) && !rb_obj_is_kind_of(ret, cBN))
+        rb_raise(ePKeyError, "key not found");
+
+    return ret;
+#endif
+}
+
 VALUE
 ossl_pkey_export_traditional(int argc, VALUE *argv, VALUE self, int to_der)
 {
@@ -1613,6 +1659,7 @@ Init_ossl_pkey(void)
     rb_define_method(cPKey, "inspect", ossl_pkey_inspect, 0);
     rb_define_method(cPKey, "to_text", ossl_pkey_to_text, 0);
     rb_define_method(cPKey, "to_data", ossl_pkey_to_data, 0);
+    rb_define_method(cPKey, "get_bn_param", ossl_pkey_get_bn_param, 1);
     rb_define_method(cPKey, "private_to_der", ossl_pkey_private_to_der, -1);
     rb_define_method(cPKey, "private_to_pem", ossl_pkey_private_to_pem, -1);
     rb_define_method(cPKey, "public_to_der", ossl_pkey_public_to_der, 0);
