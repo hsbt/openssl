@@ -176,7 +176,7 @@ ossl_digest_reset(VALUE self)
     EVP_MD_CTX *ctx;
 
     GetDigest(self, ctx);
-    if (EVP_DigestInit_ex(ctx, NULL, NULL) != 1) {
+    if (EVP_DigestInit_ex(ctx, EVP_MD_CTX_get0_md(ctx), NULL) != 1) {
 	ossl_raise(eDigestError, "Digest initialization failed.");
     }
 
