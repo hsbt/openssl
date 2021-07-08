@@ -76,12 +76,16 @@ VALUE eRSAError;
 static VALUE
 ossl_rsa_initialize(int argc, VALUE *argv, VALUE self)
 {
-    EVP_PKEY *pkey, *tmp;
-    RSA *rsa = NULL;
+    EVP_PKEY *pkey;
+    RSA *rsa;
     BIO *in;
     VALUE arg, pass;
+    int type;
 
-    GetPKey(self, pkey);
+    GetPKey0(self, pkey);
+    if (pkey)
+        rb_raise(rb_eTypeError, "pkey already initialized");
+
     /* The RSA.new(size, generator) form is handled by lib/openssl/pkey.rb */
     rb_scan_args(argc, argv, "02", &arg, &pass);
     if (argc == 0) {
@@ -90,59 +94,76 @@ ossl_rsa_initialize(int argc, VALUE *argv, VALUE self)
             ossl_raise(eRSAError, "RSA_new");
     }
     else {
-	pass = ossl_pem_passwd_value(pass);
-	arg = ossl_to_der_if_possible(arg);
-	in = ossl_obj2bio(&arg);
+        pass = ossl_pem_passwd_value(pass);
+        arg = ossl_to_der_if_possible(arg);
+        in = ossl_obj2bio(&arg);
 
-        tmp = ossl_pkey_read_generic(in, pass);
-        if (tmp) {
-            if (EVP_PKEY_base_id(tmp) != EVP_PKEY_RSA)
-                rb_raise(eRSAError, "incorrect pkey type: %s",
-                         OBJ_nid2sn(EVP_PKEY_base_id(tmp)));
-            rsa = EVP_PKEY_get1_RSA(tmp);
-            EVP_PKEY_free(tmp);
+        /* First try RSAPublicKey format */
+        rsa = d2i_RSAPublicKey_bio(in, NULL);
+        OSSL_BIO_reset(in);
+        if (rsa)
+            goto legacy;
+        rsa = PEM_read_bio_RSAPublicKey(in, NULL, NULL, NULL);
+        OSSL_BIO_reset(in);
+        if (rsa)
+            goto legacy;
+
+        /* Use the generic routine */
+        pkey = ossl_pkey_read_generic(in, pass);
+        BIO_free(in);
+        if (!pkey)
+            ossl_raise(eRSAError, "Neither PUB key nor PRIV key");
+
+        type = EVP_PKEY_base_id(pkey);
+        if (type != EVP_PKEY_RSA) {
+            EVP_PKEY_free(pkey);
+            rb_raise(eRSAError, "incorrect pkey type: %s", OBJ_nid2sn(type));
         }
-	if (!rsa) {
-	    OSSL_BIO_reset(in);
-	    rsa = PEM_read_bio_RSAPublicKey(in, NULL, NULL, NULL);
-	}
-	if (!rsa) {
-	    OSSL_BIO_reset(in);
-	    rsa = d2i_RSAPublicKey_bio(in, NULL);
-	}
-	BIO_free(in);
-	if (!rsa) {
-            ossl_clear_error();
-	    ossl_raise(eRSAError, "Neither PUB key nor PRIV key");
-	}
-    }
-    if (!EVP_PKEY_assign_RSA(pkey, rsa)) {
-	RSA_free(rsa);
-	ossl_raise(eRSAError, "EVP_PKEY_assign_RSA");
+        RTYPEDDATA_DATA(self) = pkey;
+        return self;
     }
 
+  legacy:
+    if (rsa) {
+        pkey = EVP_PKEY_new();
+        if (!pkey || EVP_PKEY_assign_RSA(pkey, rsa) != 1) {
+            EVP_PKEY_free(pkey);
+            RSA_free(rsa);
+            ossl_raise(eRSAError, "EVP_PKEY_assign_RSA");
+        }
+    }
+    RTYPEDDATA_DATA(self) = pkey;
     return self;
 }
 
+#ifndef HAVE_EVP_PKEY_DUP
 static VALUE
 ossl_rsa_initialize_copy(VALUE self, VALUE other)
 {
     EVP_PKEY *pkey;
     RSA *rsa, *rsa_new;
 
-    GetPKey(self, pkey);
-    if (EVP_PKEY_base_id(pkey) != EVP_PKEY_NONE)
-	ossl_raise(eRSAError, "RSA already initialized");
+    GetPKey0(self, pkey);
+    if (pkey)
+        rb_raise(rb_eTypeError, "pkey already initialized");
     GetRSA(other, rsa);
 
-    rsa_new = ASN1_dup((i2d_of_void *)i2d_RSAPrivateKey, (d2i_of_void *)d2i_RSAPrivateKey, (char *)rsa);
+    rsa_new = (RSA *)ASN1_dup((i2d_of_void *)i2d_RSAPrivateKey,
+                              (d2i_of_void *)d2i_RSAPrivateKey,
+                              (char *)rsa);
     if (!rsa_new)
 	ossl_raise(eRSAError, "ASN1_dup");
 
-    EVP_PKEY_assign_RSA(pkey, rsa_new);
+    pkey = EVP_PKEY_new();
+    if (!pkey || EVP_PKEY_assign_RSA(pkey, rsa_new) != 1) {
+        RSA_free(rsa_new);
+        ossl_raise(eRSAError, "EVP_PKEY_assign_RSA");
+    }
+    RTYPEDDATA_DATA(self) = pkey;
 
     return self;
 }
+#endif
 
 /*
  * call-seq:
@@ -419,19 +440,10 @@ ossl_rsa_verify_pss(int argc, VALUE *argv, VALUE self)
     ossl_raise(eRSAError, NULL);
 }
 
-/*
- * call-seq:
- *   rsa.params => hash
- *
- * THIS METHOD IS INSECURE, PRIVATE INFORMATION CAN LEAK OUT!!!
- *
- * Stores all parameters of key to the hash.  The hash has keys 'n', 'e', 'd',
- * 'p', 'q', 'dmp1', 'dmq1', 'iqmp'.
- *
- * Don't use :-)) (It's up to you)
- */
+#ifndef HAVE_EVP_PKEY_TODATA
+/* :nodoc: */
 static VALUE
-ossl_rsa_get_params(VALUE self)
+ossl_rsa_to_data(VALUE self)
 {
     RSA *rsa;
     VALUE hash;
@@ -443,17 +455,26 @@ ossl_rsa_get_params(VALUE self)
     RSA_get0_crt_params(rsa, &dmp1, &dmq1, &iqmp);
 
     hash = rb_hash_new();
-    rb_hash_aset(hash, rb_str_new2("n"), ossl_bn_new(n));
-    rb_hash_aset(hash, rb_str_new2("e"), ossl_bn_new(e));
-    rb_hash_aset(hash, rb_str_new2("d"), ossl_bn_new(d));
-    rb_hash_aset(hash, rb_str_new2("p"), ossl_bn_new(p));
-    rb_hash_aset(hash, rb_str_new2("q"), ossl_bn_new(q));
-    rb_hash_aset(hash, rb_str_new2("dmp1"), ossl_bn_new(dmp1));
-    rb_hash_aset(hash, rb_str_new2("dmq1"), ossl_bn_new(dmq1));
-    rb_hash_aset(hash, rb_str_new2("iqmp"), ossl_bn_new(iqmp));
+    if (n)
+        rb_hash_aset(hash, ID2SYM(rb_intern("n")), ossl_bn_new(n));
+    if (e)
+        rb_hash_aset(hash, ID2SYM(rb_intern("e")), ossl_bn_new(e));
+    if (d)
+        rb_hash_aset(hash, ID2SYM(rb_intern("d")), ossl_bn_new(d));
+    if (p)
+        rb_hash_aset(hash, ID2SYM(rb_intern("rsa-factor1")), ossl_bn_new(p));
+    if (q)
+        rb_hash_aset(hash, ID2SYM(rb_intern("rsa-factor2")), ossl_bn_new(q));
+    if (dmp1)
+        rb_hash_aset(hash, ID2SYM(rb_intern("rsa-exponent1")), ossl_bn_new(dmp1));
+    if (dmq1)
+        rb_hash_aset(hash, ID2SYM(rb_intern("rsa-exponent2")), ossl_bn_new(dmq1));
+    if (iqmp)
+        rb_hash_aset(hash, ID2SYM(rb_intern("rsa-coefficient1")), ossl_bn_new(iqmp));
 
     return hash;
 }
+#endif
 
 /*
  * Document-method: OpenSSL::PKey::RSA#set_key
@@ -517,7 +538,9 @@ Init_ossl_rsa(void)
     cRSA = rb_define_class_under(mPKey, "RSA", cPKey);
 
     rb_define_method(cRSA, "initialize", ossl_rsa_initialize, -1);
+#ifndef HAVE_EVP_PKEY_DUP
     rb_define_method(cRSA, "initialize_copy", ossl_rsa_initialize_copy, 1);
+#endif
 
     rb_define_method(cRSA, "public?", ossl_rsa_is_public, 0);
     rb_define_method(cRSA, "private?", ossl_rsa_is_private, 0);
@@ -528,19 +551,13 @@ Init_ossl_rsa(void)
     rb_define_method(cRSA, "sign_pss", ossl_rsa_sign_pss, -1);
     rb_define_method(cRSA, "verify_pss", ossl_rsa_verify_pss, -1);
 
-    DEF_OSSL_PKEY_BN(cRSA, rsa, n);
-    DEF_OSSL_PKEY_BN(cRSA, rsa, e);
-    DEF_OSSL_PKEY_BN(cRSA, rsa, d);
-    DEF_OSSL_PKEY_BN(cRSA, rsa, p);
-    DEF_OSSL_PKEY_BN(cRSA, rsa, q);
-    DEF_OSSL_PKEY_BN(cRSA, rsa, dmp1);
-    DEF_OSSL_PKEY_BN(cRSA, rsa, dmq1);
-    DEF_OSSL_PKEY_BN(cRSA, rsa, iqmp);
     rb_define_method(cRSA, "set_key", ossl_rsa_set_key, 3);
     rb_define_method(cRSA, "set_factors", ossl_rsa_set_factors, 2);
     rb_define_method(cRSA, "set_crt_params", ossl_rsa_set_crt_params, 3);
 
-    rb_define_method(cRSA, "params", ossl_rsa_get_params, 0);
+#ifndef HAVE_EVP_PKEY_TODATA
+    rb_define_method(cRSA, "to_data", ossl_rsa_to_data, 0);
+#endif
 
 /*
  * TODO: Test it

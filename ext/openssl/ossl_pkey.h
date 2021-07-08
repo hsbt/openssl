@@ -15,26 +15,20 @@ extern VALUE cPKey;
 extern VALUE ePKeyError;
 extern const rb_data_type_t ossl_evp_pkey_type;
 
-#define OSSL_PKEY_SET_PRIVATE(obj) rb_iv_set((obj), "private", Qtrue)
-#define OSSL_PKEY_SET_PUBLIC(obj)  rb_iv_set((obj), "private", Qfalse)
-#define OSSL_PKEY_IS_PRIVATE(obj)  (rb_iv_get((obj), "private") == Qtrue)
+/* For ENGINE */
+#define OSSL_PKEY_SET_PRIVATE(obj) rb_ivar_set((obj), rb_intern("private"), Qtrue)
+#define OSSL_PKEY_IS_PRIVATE(obj)  (rb_attr_get((obj), rb_intern("private")) == Qtrue)
 
-#define NewPKey(klass) \
-    TypedData_Wrap_Struct((klass), &ossl_evp_pkey_type, 0)
-#define SetPKey(obj, pkey) do { \
-    if (!(pkey)) { \
-	rb_raise(rb_eRuntimeError, "PKEY wasn't initialized!"); \
-    } \
-    RTYPEDDATA_DATA(obj) = (pkey); \
-    OSSL_PKEY_SET_PUBLIC(obj); \
-} while (0)
+#define GetPKey0(obj, pkey) \
+    TypedData_Get_Struct((obj), EVP_PKEY, &ossl_evp_pkey_type, (pkey))
 #define GetPKey(obj, pkey) do {\
-    TypedData_Get_Struct((obj), EVP_PKEY, &ossl_evp_pkey_type, (pkey)); \
+    GetPKey0((obj), (pkey)); \
     if (!(pkey)) { \
 	rb_raise(rb_eRuntimeError, "PKEY wasn't initialized!");\
     } \
 } while (0)
 
+/* Takes ownership of the EVP_PKEY */
 VALUE ossl_pkey_new(EVP_PKEY *);
 void ossl_pkey_check_public_key(const EVP_PKEY *);
 EVP_PKEY *ossl_pkey_read_generic(BIO *, VALUE);
@@ -93,37 +87,6 @@ extern VALUE eEC_POINT;
 VALUE ossl_ec_new(EVP_PKEY *);
 void Init_ossl_ec(void);
 
-#define OSSL_PKEY_BN_DEF_GETTER0(_keytype, _type, _name, _get)		\
-/*									\
- *  call-seq:								\
- *     _keytype##.##_name -> aBN					\
- */									\
-static VALUE ossl_##_keytype##_get_##_name(VALUE self)			\
-{									\
-	_type *obj;							\
-	const BIGNUM *bn;						\
-									\
-	Get##_type(self, obj);						\
-	_get;								\
-	if (bn == NULL)							\
-		return Qnil;						\
-	return ossl_bn_new(bn);						\
-}
-
-#define OSSL_PKEY_BN_DEF_GETTER3(_keytype, _type, _group, a1, a2, a3)	\
-	OSSL_PKEY_BN_DEF_GETTER0(_keytype, _type, a1,			\
-		_type##_get0_##_group(obj, &bn, NULL, NULL))		\
-	OSSL_PKEY_BN_DEF_GETTER0(_keytype, _type, a2,			\
-		_type##_get0_##_group(obj, NULL, &bn, NULL))		\
-	OSSL_PKEY_BN_DEF_GETTER0(_keytype, _type, a3,			\
-		_type##_get0_##_group(obj, NULL, NULL, &bn))
-
-#define OSSL_PKEY_BN_DEF_GETTER2(_keytype, _type, _group, a1, a2)	\
-	OSSL_PKEY_BN_DEF_GETTER0(_keytype, _type, a1,			\
-		_type##_get0_##_group(obj, &bn, NULL))			\
-	OSSL_PKEY_BN_DEF_GETTER0(_keytype, _type, a2,			\
-		_type##_get0_##_group(obj, NULL, &bn))
-
 #define OSSL_PKEY_BN_DEF_SETTER3(_keytype, _type, _group, a1, a2, a3)	\
 /*									\
  *  call-seq:								\
@@ -136,6 +99,8 @@ static VALUE ossl_##_keytype##_set_##_group(VALUE self, VALUE v1, VALUE v2, VALU
 	BIGNUM *bn2 = NULL, *orig_bn2 = NIL_P(v2) ? NULL : GetBNPtr(v2);\
 	BIGNUM *bn3 = NULL, *orig_bn3 = NIL_P(v3) ? NULL : GetBNPtr(v3);\
 									\
+        rb_warning(#_keytype"#set_"#_group"= is incompatible with "	\
+                   "OpenSSL 3.0; check OpenSSL::PKey.from_data");	\
 	Get##_type(self, obj);						\
         if ((orig_bn1 && !(bn1 = BN_dup(orig_bn1))) ||			\
             (orig_bn2 && !(bn2 = BN_dup(orig_bn2))) ||			\
@@ -166,6 +131,8 @@ static VALUE ossl_##_keytype##_set_##_group(VALUE self, VALUE v1, VALUE v2) \
 	BIGNUM *bn1 = NULL, *orig_bn1 = NIL_P(v1) ? NULL : GetBNPtr(v1);\
 	BIGNUM *bn2 = NULL, *orig_bn2 = NIL_P(v2) ? NULL : GetBNPtr(v2);\
 									\
+        rb_warning(#_keytype"#set_"#_group"= is incompatible with "	\
+                   "OpenSSL 3.0; check OpenSSL::PKey.from_data");	\
 	Get##_type(self, obj);						\
         if ((orig_bn1 && !(bn1 = BN_dup(orig_bn1))) ||			\
             (orig_bn2 && !(bn2 = BN_dup(orig_bn2)))) {			\
@@ -183,14 +150,9 @@ static VALUE ossl_##_keytype##_set_##_group(VALUE self, VALUE v1, VALUE v2) \
 }
 
 #define OSSL_PKEY_BN_DEF3(_keytype, _type, _group, a1, a2, a3)		\
-	OSSL_PKEY_BN_DEF_GETTER3(_keytype, _type, _group, a1, a2, a3)	\
 	OSSL_PKEY_BN_DEF_SETTER3(_keytype, _type, _group, a1, a2, a3)
 
 #define OSSL_PKEY_BN_DEF2(_keytype, _type, _group, a1, a2)		\
-	OSSL_PKEY_BN_DEF_GETTER2(_keytype, _type, _group, a1, a2)	\
 	OSSL_PKEY_BN_DEF_SETTER2(_keytype, _type, _group, a1, a2)
-
-#define DEF_OSSL_PKEY_BN(class, keytype, name)				\
-	rb_define_method((class), #name, ossl_##keytype##_get_##name, 0)
 
 #endif /* OSSL_PKEY_H */

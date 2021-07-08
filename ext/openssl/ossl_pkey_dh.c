@@ -76,7 +76,10 @@ ossl_dh_initialize(int argc, VALUE *argv, VALUE self)
     BIO *in;
     VALUE arg;
 
-    GetPKey(self, pkey);
+    GetPKey0(self, pkey);
+    if (pkey)
+        rb_raise(rb_eTypeError, "pkey already initialized");
+
     /* The DH.new(size, generator) form is handled by lib/openssl/pkey.rb */
     if (rb_scan_args(argc, argv, "01", &arg) == 0) {
         dh = DH_new();
@@ -84,25 +87,48 @@ ossl_dh_initialize(int argc, VALUE *argv, VALUE self)
             ossl_raise(eDHError, "DH_new");
     }
     else {
-	arg = ossl_to_der_if_possible(arg);
-	in = ossl_obj2bio(&arg);
-	dh = PEM_read_bio_DHparams(in, NULL, NULL, NULL);
-	if (!dh){
-	    OSSL_BIO_reset(in);
-	    dh = d2i_DHparams_bio(in, NULL);
-	}
-	BIO_free(in);
-	if (!dh) {
-	    ossl_raise(eDHError, NULL);
-	}
+        int type;
+
+        arg = ossl_to_der_if_possible(arg);
+        in = ossl_obj2bio(&arg);
+
+        /* First try DER-encoded parameters */
+        dh = d2i_DHparams_bio(in, NULL);
+        OSSL_BIO_reset(in);
+        if (dh) {
+            BIO_free(in);
+            goto legacy;
+        }
+
+        /* Use the generic routine - parses PEM-encoded parameters */
+        pkey = ossl_pkey_read_generic(in, Qnil);
+        BIO_free(in);
+        if (!pkey)
+            ossl_raise(eDHError, "could not parse pkey");
+
+        type = EVP_PKEY_base_id(pkey);
+        if (type != EVP_PKEY_DH) {
+            EVP_PKEY_free(pkey);
+            rb_raise(eDHError, "incorrect pkey type: %s", OBJ_nid2sn(type));
+        }
+        RTYPEDDATA_DATA(self) = pkey;
+        return self;
     }
-    if (!EVP_PKEY_assign_DH(pkey, dh)) {
-	DH_free(dh);
-	ossl_raise(eDHError, NULL);
+
+  legacy:
+    if (dh) {
+        pkey = EVP_PKEY_new();
+        if (!pkey || EVP_PKEY_assign_DH(pkey, dh) != 1) {
+            EVP_PKEY_free(pkey);
+            DH_free(dh);
+            ossl_raise(eDHError, "EVP_PKEY_assign_DH");
+        }
     }
+    RTYPEDDATA_DATA(self) = pkey;
     return self;
 }
 
+#ifndef HAVE_EVP_PKEY_DUP
 static VALUE
 ossl_dh_initialize_copy(VALUE self, VALUE other)
 {
@@ -110,15 +136,14 @@ ossl_dh_initialize_copy(VALUE self, VALUE other)
     DH *dh, *dh_other;
     const BIGNUM *pub, *priv;
 
-    GetPKey(self, pkey);
-    if (EVP_PKEY_base_id(pkey) != EVP_PKEY_NONE)
-	ossl_raise(eDHError, "DH already initialized");
+    GetPKey0(self, pkey);
+    if (pkey)
+        rb_raise(rb_eTypeError, "pkey already initialized");
     GetDH(other, dh_other);
 
     dh = DHparams_dup(dh_other);
     if (!dh)
 	ossl_raise(eDHError, "DHparams_dup");
-    EVP_PKEY_assign_DH(pkey, dh);
 
     DH_get0_key(dh_other, &pub, &priv);
     if (pub) {
@@ -133,8 +158,16 @@ ossl_dh_initialize_copy(VALUE self, VALUE other)
 	DH_set0_key(dh, pub2, priv2);
     }
 
+    pkey = EVP_PKEY_new();
+    if (!pkey || EVP_PKEY_assign_DH(pkey, dh) != 1) {
+        EVP_PKEY_free(pkey);
+        DH_free(dh);
+        ossl_raise(eDHError, "EVP_PKEY_assign_DH");
+    }
+    RTYPEDDATA_DATA(self) = pkey;
     return self;
 }
+#endif
 
 /*
  *  call-seq:
@@ -237,16 +270,10 @@ ossl_dh_to_der(VALUE self)
     return str;
 }
 
-/*
- *  call-seq:
- *     dh.params -> hash
- *
- * Stores all parameters of key to the hash
- * INSECURE: PRIVATE INFORMATIONS CAN LEAK OUT!!!
- * Don't use :-)) (I's up to you)
- */
+#ifndef HAVE_EVP_PKEY_TODATA
+/* :nodoc: */
 static VALUE
-ossl_dh_get_params(VALUE self)
+ossl_dh_to_data(VALUE self)
 {
     DH *dh;
     VALUE hash;
@@ -257,14 +284,15 @@ ossl_dh_get_params(VALUE self)
     DH_get0_key(dh, &pub_key, &priv_key);
 
     hash = rb_hash_new();
-    rb_hash_aset(hash, rb_str_new2("p"), ossl_bn_new(p));
-    rb_hash_aset(hash, rb_str_new2("q"), ossl_bn_new(q));
-    rb_hash_aset(hash, rb_str_new2("g"), ossl_bn_new(g));
-    rb_hash_aset(hash, rb_str_new2("pub_key"), ossl_bn_new(pub_key));
-    rb_hash_aset(hash, rb_str_new2("priv_key"), ossl_bn_new(priv_key));
+    rb_hash_aset(hash, ID2SYM(rb_intern("p")), p ? ossl_bn_new(p) : Qnil);
+    rb_hash_aset(hash, ID2SYM(rb_intern("q")), q ? ossl_bn_new(q) : Qnil);
+    rb_hash_aset(hash, ID2SYM(rb_intern("g")), g ? ossl_bn_new(g) : Qnil);
+    rb_hash_aset(hash, ID2SYM(rb_intern("pub")), pub_key ? ossl_bn_new(pub_key) : Qnil);
+    rb_hash_aset(hash, ID2SYM(rb_intern("priv")), priv_key ? ossl_bn_new(priv_key) : Qnil);
 
     return hash;
 }
+#endif
 
 /*
  *  call-seq:
@@ -378,7 +406,9 @@ Init_ossl_dh(void)
      */
     cDH = rb_define_class_under(mPKey, "DH", cPKey);
     rb_define_method(cDH, "initialize", ossl_dh_initialize, -1);
+#ifndef HAVE_EVP_PKEY_DUP
     rb_define_method(cDH, "initialize_copy", ossl_dh_initialize_copy, 1);
+#endif
     rb_define_method(cDH, "public?", ossl_dh_is_public, 0);
     rb_define_method(cDH, "private?", ossl_dh_is_private, 0);
     rb_define_method(cDH, "export", ossl_dh_export, 0);
@@ -387,15 +417,12 @@ Init_ossl_dh(void)
     rb_define_method(cDH, "to_der", ossl_dh_to_der, 0);
     rb_define_method(cDH, "params_ok?", ossl_dh_check_params, 0);
 
-    DEF_OSSL_PKEY_BN(cDH, dh, p);
-    DEF_OSSL_PKEY_BN(cDH, dh, q);
-    DEF_OSSL_PKEY_BN(cDH, dh, g);
-    DEF_OSSL_PKEY_BN(cDH, dh, pub_key);
-    DEF_OSSL_PKEY_BN(cDH, dh, priv_key);
     rb_define_method(cDH, "set_pqg", ossl_dh_set_pqg, 3);
     rb_define_method(cDH, "set_key", ossl_dh_set_key, 2);
 
-    rb_define_method(cDH, "params", ossl_dh_get_params, 0);
+#ifndef HAVE_EVP_PKEY_TODATA
+    rb_define_method(cDH, "to_data", ossl_dh_to_data, 0);
+#endif
 }
 
 #else /* defined NO_DH */

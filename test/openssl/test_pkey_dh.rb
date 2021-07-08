@@ -40,12 +40,14 @@ class OpenSSL::TestPKeyDH < OpenSSL::PKeyTestCase
 
   def test_DHparams
     dh1024 = Fixtures.pkey("dh1024")
+    dh1024params = dh1024.public_key
+
     asn1 = OpenSSL::ASN1::Sequence([
       OpenSSL::ASN1::Integer(dh1024.p),
       OpenSSL::ASN1::Integer(dh1024.g)
     ])
     key = OpenSSL::PKey::DH.new(asn1.to_der)
-    assert_same_dh dup_public(dh1024), key
+    assert_same_dh dh1024params, key
 
     pem = <<~EOF
     -----BEGIN DH PARAMETERS-----
@@ -55,9 +57,9 @@ class OpenSSL::TestPKeyDH < OpenSSL::PKeyTestCase
     -----END DH PARAMETERS-----
     EOF
     key = OpenSSL::PKey::DH.new(pem)
-    assert_same_dh dup_public(dh1024), key
+    assert_same_dh dh1024params, key
     key = OpenSSL::PKey.read(pem)
-    assert_same_dh dup_public(dh1024), key
+    assert_same_dh dh1024params, key
 
     assert_equal asn1.to_der, dh1024.to_der
     assert_equal pem, dh1024.export
@@ -105,12 +107,18 @@ class OpenSSL::TestPKeyDH < OpenSSL::PKeyTestCase
   def test_dup
     dh = Fixtures.pkey("dh1024")
     dh2 = dh.dup
-    assert_equal dh.to_der, dh2.to_der # params
-    assert_equal_params dh, dh2 # keys
-    dh2.set_pqg(dh2.p + 1, nil, dh2.g)
-    assert_not_equal dh2.p, dh.p
-    assert_equal dh2.g, dh.g
+    assert_equal dh.to_der, dh2.to_der # encodes params only
+    assert_equal dh.to_data, dh2.to_data # all components
   end
+
+  def test_set_components
+    dh1 = Fixtures.pkey("dh-1")
+    dh2 = Fixtures.pkey("dh1024")
+    assert_not_equal dh1.to_der, dh2.to_der
+
+    dh2.set_pqg(dh1.p, dh1.q, dh1.g)
+    assert_equal dh1.to_der, dh2.to_der
+  end if !openssl?(3, 0, 0)
 
   def test_marshal
     dh = Fixtures.pkey("dh1024")
@@ -119,12 +127,37 @@ class OpenSSL::TestPKeyDH < OpenSSL::PKeyTestCase
     assert_equal dh.to_der, deserialized.to_der
   end
 
-  private
+  def test_to_data
+    # PKCS #3 DH - q does not exist
+    dh = OpenSSL::PKey.generate_key(Fixtures.pkey("dh1024"))
 
-  def assert_equal_params(dh1, dh2)
-    assert_equal(dh1.g, dh2.g)
-    assert_equal(dh1.p, dh2.p)
+    # #params
+    params_keys = %w{p g pub_key priv_key}
+    params = dh.params
+    assert_equal [], params_keys - params.keys
+
+    # #to_data; may contain additional entries
+    data_keys = %w{p g pub priv}
+    data = dh.to_data
+    assert_equal [], data_keys.map(&:intern) - data.keys
+
+    # Check value
+    assert_equal dh.p, params["p"]
+    assert_equal dh.p, data[:p]
+    assert_equal 1024, dh.p.num_bits
+    assert_equal true, dh.p.prime?
+
+    params_keys.each_with_index do |pk, i|
+      dk = data_keys[i]
+      getter_value = dh.public_send(pk)
+
+      assert_kind_of OpenSSL::BN, getter_value
+      assert_equal getter_value, params[pk]
+      assert_equal getter_value, data[dk.intern]
+    end
   end
+
+  private
 
   def assert_no_key(dh)
     assert_equal(false, dh.public?)

@@ -74,6 +74,23 @@ ossl_bn_new(const BIGNUM *bn)
     return obj;
 }
 
+#ifdef HAVE_EVP_PKEY_TODATA
+VALUE
+ossl_bn_new_from_native(const void *data, size_t data_size)
+{
+    BIGNUM *bn;
+    VALUE obj;
+
+    obj = NewBN(cBN);
+    bn = BN_native2bn(data, data_size, NULL);
+    if (!bn)
+        ossl_raise(eBNError, "BN_native2bn");
+    SetBN(obj, bn);
+
+    return obj;
+}
+#endif
+
 static BIGNUM *
 integer_to_bnptr(VALUE obj, BIGNUM *orig)
 {
@@ -826,12 +843,6 @@ BIGNUM_SELF_SHIFT(rshift)
  */
 BIGNUM_RAND(rand)
 
-/*
- * Document-method: OpenSSL::BN.pseudo_rand
- *   BN.pseudo_rand(bits [, fill [, odd]]) -> aBN
- */
-BIGNUM_RAND(pseudo_rand)
-
 #define BIGNUM_RAND_RANGE(func)					\
     static VALUE						\
     ossl_bn_s_##func##_range(VALUE klass, VALUE range)		\
@@ -856,14 +867,6 @@ BIGNUM_RAND(pseudo_rand)
  *
  */
 BIGNUM_RAND_RANGE(rand)
-
-/*
- * Document-method: OpenSSL::BN.pseudo_rand_range
- * call-seq:
- *   BN.pseudo_rand_range(range) -> aBN
- *
- */
-BIGNUM_RAND_RANGE(pseudo_rand)
 
 /*
  * call-seq:
@@ -1118,34 +1121,29 @@ ossl_bn_hash(VALUE self)
  *    bn.prime? => true | false
  *    bn.prime?(checks) => true | false
  *
- * Performs a Miller-Rabin probabilistic primality test with _checks_
- * iterations. If _checks_ is not specified, a number of iterations is used
- * that yields a false positive rate of at most 2^-80 for random input.
+ * Performs Miller-Rabin primality test for _bn_.
  *
- * === Parameters
- * * _checks_ - integer
+ * As of Ruby/OpenSSL 2.3.0, the argument _checks_ is ignored.
  */
 static VALUE
 ossl_bn_is_prime(int argc, VALUE *argv, VALUE self)
 {
     BIGNUM *bn;
-    VALUE vchecks;
-    int checks = BN_prime_checks;
+    int ret;
 
-    if (rb_scan_args(argc, argv, "01", &vchecks) == 1) {
-	checks = NUM2INT(vchecks);
-    }
+    rb_check_arity(argc, 0, 1);
     GetBN(self, bn);
-    switch (BN_is_prime_ex(bn, checks, ossl_bn_ctx, NULL)) {
-    case 1:
-	return Qtrue;
-    case 0:
-	return Qfalse;
-    default:
-	ossl_raise(eBNError, NULL);
-    }
-    /* not reachable */
-    return Qnil;
+
+#if defined(HAVE_BN_CHECK_PRIME)
+    ret = BN_check_prime(bn, ossl_bn_ctx, NULL);
+    if (ret < 0)
+        ossl_raise(eBNError, "BN_check_prime");
+#else
+    ret = BN_is_prime_fasttest_ex(bn, BN_prime_checks, ossl_bn_ctx, 1, NULL);
+    if (ret < 0)
+        ossl_raise(eBNError, "BN_is_prime_fasttest_ex");
+#endif
+    return ret ? Qtrue : Qfalse;
 }
 
 /*
@@ -1154,40 +1152,18 @@ ossl_bn_is_prime(int argc, VALUE *argv, VALUE self)
  *    bn.prime_fasttest?(checks) => true | false
  *    bn.prime_fasttest?(checks, trial_div) => true | false
  *
- * Performs a Miller-Rabin primality test. This is same as #prime? except this
- * first attempts trial divisions with some small primes.
+ * Performs Miller-Rabin primality test for _bn_. This is an alias of #prime?.
  *
- * === Parameters
- * * _checks_ - integer
- * * _trial_div_ - boolean
+ * This method is deprecated. Use #prime? instead.
+ *
+ * As of Ruby/OpenSSL 2.3.0, the arguments _checks_ and _trial\_div_ are
+ * ignored.
  */
 static VALUE
 ossl_bn_is_prime_fasttest(int argc, VALUE *argv, VALUE self)
 {
-    BIGNUM *bn;
-    VALUE vchecks, vtrivdiv;
-    int checks = BN_prime_checks, do_trial_division = 1;
-
-    rb_scan_args(argc, argv, "02", &vchecks, &vtrivdiv);
-
-    if (!NIL_P(vchecks)) {
-	checks = NUM2INT(vchecks);
-    }
-    GetBN(self, bn);
-    /* handle true/false */
-    if (vtrivdiv == Qfalse) {
-	do_trial_division = 0;
-    }
-    switch (BN_is_prime_fasttest_ex(bn, checks, ossl_bn_ctx, do_trial_division, NULL)) {
-    case 1:
-	return Qtrue;
-    case 0:
-	return Qfalse;
-    default:
-	ossl_raise(eBNError, NULL);
-    }
-    /* not reachable */
-    return Qnil;
+    rb_check_arity(argc, 0, 2);
+    return ossl_bn_is_prime(0, argv, self);
 }
 
 /*
@@ -1306,9 +1282,9 @@ Init_ossl_bn(void)
      * get_word */
 
     rb_define_singleton_method(cBN, "rand", ossl_bn_s_rand, -1);
-    rb_define_singleton_method(cBN, "pseudo_rand", ossl_bn_s_pseudo_rand, -1);
     rb_define_singleton_method(cBN, "rand_range", ossl_bn_s_rand_range, 1);
-    rb_define_singleton_method(cBN, "pseudo_rand_range", ossl_bn_s_pseudo_rand_range, 1);
+    rb_define_alias(rb_singleton_class(cBN), "pseudo_rand", "rand");
+    rb_define_alias(rb_singleton_class(cBN), "pseudo_rand_range", "rand_range");
 
     rb_define_singleton_method(cBN, "generate_prime", ossl_bn_s_generate_prime, -1);
     rb_define_method(cBN, "prime?", ossl_bn_is_prime, -1);

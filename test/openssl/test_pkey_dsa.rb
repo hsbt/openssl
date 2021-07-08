@@ -138,6 +138,8 @@ class OpenSSL::TestPKeyDSA < OpenSSL::PKeyTestCase
 
   def test_PUBKEY
     dsa512 = Fixtures.pkey("dsa512")
+    dsa512pub = OpenSSL::PKey::DSA.new(dsa512.public_to_der)
+
     asn1 = OpenSSL::ASN1::Sequence([
       OpenSSL::ASN1::Sequence([
         OpenSSL::ASN1::ObjectId("DSA"),
@@ -153,7 +155,7 @@ class OpenSSL::TestPKeyDSA < OpenSSL::PKeyTestCase
     ])
     key = OpenSSL::PKey::DSA.new(asn1.to_der)
     assert_not_predicate key, :private?
-    assert_same_dsa dup_public(dsa512), key
+    assert_same_dsa dsa512pub, key
 
     pem = <<~EOF
     -----BEGIN PUBLIC KEY-----
@@ -166,10 +168,15 @@ class OpenSSL::TestPKeyDSA < OpenSSL::PKeyTestCase
     -----END PUBLIC KEY-----
     EOF
     key = OpenSSL::PKey::DSA.new(pem)
-    assert_same_dsa dup_public(dsa512), key
+    assert_same_dsa dsa512pub, key
 
-    assert_equal asn1.to_der, dup_public(dsa512).to_der
-    assert_equal pem, dup_public(dsa512).export
+    assert_equal asn1.to_der, key.to_der
+    assert_equal pem, key.export
+
+    assert_equal asn1.to_der, dsa512.public_to_der
+    assert_equal asn1.to_der, key.public_to_der
+    assert_equal pem, dsa512.public_to_pem
+    assert_equal pem, key.public_to_pem
   end
 
   def test_read_DSAPublicKey_pem
@@ -198,11 +205,15 @@ fWLOqqkzFeRrYMDzUpl36XktY6Yq8EJYlW9pCMmBVNy/dQ==
   end
 
   def test_dup
-    key = Fixtures.pkey("dsa1024")
-    key2 = key.dup
-    assert_equal key.params, key2.params
-    key2.set_pqg(key2.p + 1, key2.q, key2.g)
-    assert_not_equal key.params, key2.params
+    key1 = Fixtures.pkey("dsa1024")
+    key1dup = key1.dup
+    key2 = Fixtures.pkey("dsa512")
+    key2dup = key2.dup
+
+    assert_kind_of OpenSSL::PKey::DSA, key1dup
+    assert_equal key1.to_data, key1dup.to_data
+    assert_not_equal key1.to_data, key2dup.to_data
+    assert_not_equal key1dup.to_data, key2dup.to_data
   end
 
   def test_marshal
@@ -210,6 +221,35 @@ fWLOqqkzFeRrYMDzUpl36XktY6Yq8EJYlW9pCMmBVNy/dQ==
     deserialized = Marshal.load(Marshal.dump(key))
 
     assert_equal key.to_der, deserialized.to_der
+  end
+
+  def test_to_data
+    dsa = Fixtures.pkey("dsa1024")
+
+    # #params and gettters
+    params_keys = %w{p q g pub_key priv_key}
+    params = dsa.params
+    assert_equal [], params_keys - params.keys
+
+    # #to_data; may contain additional entries
+    data_keys = %w{p q g pub priv}
+    data = dsa.to_data
+    assert_equal [], data_keys.map(&:intern) - data.keys
+
+    # Check value
+    assert_equal dsa.p, params["p"]
+    assert_equal dsa.p, data[:p]
+    assert_equal 1024, dsa.p.num_bits
+    assert_equal true, dsa.p.prime?
+
+    params_keys.each_with_index do |pk, i|
+      dk = data_keys[i]
+      getter_value = dsa.public_send(pk)
+
+      assert_kind_of OpenSSL::BN, getter_value
+      assert_equal getter_value, params[pk]
+      assert_equal getter_value, data[dk.intern]
+    end
   end
 
   private
